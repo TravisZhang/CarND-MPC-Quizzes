@@ -8,11 +8,11 @@
 using CppAD::AD;
 using Eigen::VectorXd;
 
-/**
- * TODO: Set N and dt
- */
-size_t N = ? ;
-double dt = ? ;
+// We set the number of timesteps to 25
+// and the timestep evaluation frequency or evaluation
+// period to 0.05.
+size_t N = 25;
+double dt = 0.05;
 
 // This value assumes the model presented in the classroom is used.
 //
@@ -32,6 +32,10 @@ double ref_v = 40;
 // The solver takes all the state variables and actuator
 // variables in a singular vector. Thus, we should to establish
 // when one variable starts and another ends to make our lifes easier.
+
+// NOTE: There are 6 states (x y psi v cte epsi) & 2 actuations (delta a), the states exist for each timestep,
+// but the actuations exist only from the 2nd timestep. So there are totally 6*N states & 2*(N-1) actuations
+// for the whole horizon
 size_t x_start = 0;
 size_t y_start = x_start + N;
 size_t psi_start = y_start + N;
@@ -61,6 +65,25 @@ class FG_eval {
      *   anything you think may be beneficial.
      */
 
+    // The part of the cost based on the reference state.
+    for (int t = 0; t < N; ++t) {
+      fg[0] += CppAD::pow(vars[cte_start + t], 2);
+      fg[0] += CppAD::pow(vars[epsi_start + t], 2);
+      fg[0] += CppAD::pow(vars[v_start + t] - ref_v, 2);
+    }
+
+    // Minimize the use of actuators.
+    for (int t = 0; t < N - 1; ++t) {
+      fg[0] += CppAD::pow(vars[delta_start + t], 2);
+      fg[0] += CppAD::pow(vars[a_start + t], 2);
+    }
+
+    // Minimize the value gap between sequential actuations.
+    for (int t = 0; t < N - 2; ++t) {
+      fg[0] += CppAD::pow(vars[delta_start + t + 1] - vars[delta_start + t], 2);
+      fg[0] += CppAD::pow(vars[a_start + t + 1] - vars[a_start + t], 2);
+    }
+
 
     //
     // Setup Constraints
@@ -85,23 +108,47 @@ class FG_eval {
        * TODO: Grab the rest of the states at t+1 and t.
        *   We have given you parts of these states below.
        */
+      // The state at time t+1 .
       AD<double> x1 = vars[x_start + t];
+      AD<double> y1 = vars[y_start + t];
+      AD<double> psi1 = vars[psi_start + t];
+      AD<double> v1 = vars[v_start + t];
+      AD<double> cte1 = vars[cte_start + t];
+      AD<double> epsi1 = vars[epsi_start + t];
 
+      // The state at time t.
       AD<double> x0 = vars[x_start + t - 1];
+      AD<double> y0 = vars[y_start + t - 1];
       AD<double> psi0 = vars[psi_start + t - 1];
       AD<double> v0 = vars[v_start + t - 1];
+      AD<double> cte0 = vars[cte_start + t - 1];
+      AD<double> epsi0 = vars[epsi_start + t - 1];
+
+      // Only consider the actuation at time t.
+      AD<double> delta0 = vars[delta_start + t - 1];
+      AD<double> a0 = vars[a_start + t - 1];
+
+      AD<double> f0 = coeffs[0] + coeffs[1] * x0;
+      AD<double> psides0 = CppAD::atan(coeffs[1]);
 
       // Here's `x` to get you started.
       // The idea here is to constraint this value to be 0.
       //
-      // NOTE: The use of `AD<double>` and use of `CppAD`!
-      // CppAD can compute derivatives and pass these to the solver.
-
-      /**
-       * TODO: Setup the rest of the model constraints
-       */
-      
+      // Recall the equations for the model:
+      // x_[t+1] = x[t] + v[t] * cos(psi[t]) * dt
+      // y_[t+1] = y[t] + v[t] * sin(psi[t]) * dt
+      // psi_[t+1] = psi[t] + v[t] / Lf * delta[t] * dt
+      // v_[t+1] = v[t] + a[t] * dt
+      // cte[t+1] = f(x[t]) - y[t] + v[t] * sin(epsi[t]) * dt
+      // epsi[t+1] = psi[t] - psides[t] + v[t] * delta[t] / Lf * dt
       fg[1 + x_start + t] = x1 - (x0 + v0 * CppAD::cos(psi0) * dt);
+      fg[1 + y_start + t] = y1 - (y0 + v0 * CppAD::sin(psi0) * dt);
+      fg[1 + psi_start + t] = psi1 - (psi0 + v0 * delta0 / Lf * dt);
+      fg[1 + v_start + t] = v1 - (v0 + a0 * dt);
+      fg[1 + cte_start + t] =
+          cte1 - ((f0 - y0) + (v0 * CppAD::sin(epsi0) * dt));
+      fg[1 + epsi_start + t] =
+          epsi1 - ((psi0 - psides0) + v0 * delta0 / Lf * dt);
 
     }
   }
@@ -198,7 +245,12 @@ std::vector<double> MPC::Solve(const VectorXd &x0, const VectorXd &coeffs) {
 
   // options
   std::string options;
-  options += "Integer print_level  0\n";
+  // options += "Integer print_level  0\n";
+  // NOTE: Setting sparse to true allows the solver to take advantage
+  // of sparse routines, this makes the computation MUCH FASTER. If you
+  // can uncomment 1 of these and see if it makes a difference or not but
+  // if you uncomment both the computation time should go up in orders of
+  // magnitude.
   options += "Sparse  true        forward\n";
   options += "Sparse  true        reverse\n";
 
